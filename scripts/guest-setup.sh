@@ -289,7 +289,7 @@ EOF
 # ---------- 16. 生成 initramfs ----------
 update-initramfs -u -k all
 
-# ---------- 18. 安装引导程序 ----------
+# ---------- 17. 安装引导程序 ----------
 info "安装引导程序（boot_mode=${BOOT_MODE}）"
 case "${BOOT_MODE}" in
   bios|both)
@@ -307,11 +307,11 @@ case "${BOOT_MODE}" in
     ;;
 esac
 
-# ---------- 19. 生成 /etc/default/grub 与 /boot/grub/grub.cfg ----------
+# ---------- 18. 生成 /etc/default/grub 与 /boot/grub/grub.cfg ----------
 # 刻意不用 update-grub：chroot 里 grub-probe 解析不出根分区 UUID，
 # 会把构建机的临时设备名（/dev/loopXp3）写进 grub.cfg，导致实例起不来。
 bash /tmp/guest-grub.sh
 
-# ---------- 20. 启用服务 + 清理裁剪 ----------
+# ---------- 19. 启用服务 + 清理裁剪 ----------
 # 拆到 guest-finalize.sh：逻辑独立，方便出问题时单独重跑
 bash /tmp/guest-finalize.sh

@@ -199,9 +199,28 @@ log "回收已删除的数据块（决定最终镜像大小）"
 trim_fs "${ROOTFS}"
 trim_fs "${ROOTFS}/boot/efi"
 
-log "卸载镜像"
+log "卸载镜像（第一轮）"
 cleanup
 trap - EXIT
+
+# 重新挂载做第二轮回收：第一轮若因回写竞争没生效，这一轮基本必然生效。
+# 实测 raw 从 ~700MB 降到 ~345MB，最终 qcow2 从 347MB 降到 153MB。
+log "重新挂载做第二轮回收"
+LOOP="$(losetup --show -P -f "${DISK_RAW}")"
+mount "${ROOT_PART}" "${ROOTFS}"
+mkdir -p "${ROOTFS}/boot/efi"
+mount "${ESP_PART}" "${ROOTFS}/boot/efi"
+trim_fs "${ROOTFS}"
+trim_fs "${ROOTFS}/boot/efi"
+umount "${ROOTFS}/boot/efi"
+umount "${ROOTFS}"
+losetup -d "${LOOP}"
+LOOP=""
+
+RAW_ALLOC_MB="$(du -m "${DISK_RAW}" | cut -f1)"
+log "raw 实际占用：${RAW_ALLOC_MB} MB"
+[ "${RAW_ALLOC_MB}" -lt 600 ] \
+  || warn "raw 占用 ${RAW_ALLOC_MB}MB 偏大，说明块回收没完全生效（不影响使用，只是镜像更大）"
 
 # ---------- 镜像文件层面的断言 + 压缩（独立脚本，便于单独调试） ----------
 IMAGE_VERSION="${IMAGE_VERSION}" \
