@@ -83,7 +83,7 @@ nameserver 8.8.8.8
 EOF
 
 # ---------- 6. 安装软件包（逐个候选源尝试） ----------
-PKGS="systemd-sysv dbus kmod e2fsprogs fdisk gdisk dosfstools mtools \
+PKGS="systemd-sysv dbus kmod e2fsprogs fdisk gdisk dosfstools mtools dmidecode \
 initramfs-tools xz-utils openssh-server libpam-systemd \
 cloud-init cloud-guest-utils \
 ifupdown isc-dhcp-client netbase iproute2 iputils-ping \
@@ -219,7 +219,12 @@ EOF
 mkdir -p /etc/cloud/cloud.cfg.d
 cat > /etc/cloud/cloud.cfg.d/99-cloud-build.cfg <<EOF
 # 由 debian-cloud-build 生成
-datasource_list: [ Aliyun, ConfigDrive, NoCloud, None ]
+#
+# 刻意不设置 datasource_list：cloud-init 内置的默认列表已经覆盖 AliYun
+# （阿里云 ECS 通过 DMI product_name="Alibaba Cloud ECS" 被自动识别）、
+# ConfigDrive、NoCloud、Ec2、Azure、GCE 等。自己写一份反而容易拼错名字
+# （ds-identify 与 Python 侧用的都是 "AliYun"，不是 "Aliyun"），
+# 也会因为把探测范围收窄而影响在其它云平台上的可用性。
 
 disable_root: false
 ssh_pwauth: true
@@ -281,19 +286,7 @@ ff02::1 ip6-allnodes
 ff02::2 ip6-allrouters
 EOF
 
-# ---------- 16. 引导参数 ----------
-cat > /etc/default/grub <<'EOF'
-GRUB_DEFAULT=0
-GRUB_TIMEOUT=1
-GRUB_DISTRIBUTOR="Debian"
-GRUB_CMDLINE_LINUX_DEFAULT=""
-# console=ttyS0 让阿里云控制台/串口能看到启动过程；net.ifnames=0 固定网卡名为 eth0
-GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200n8 net.ifnames=0"
-GRUB_TERMINAL=console
-GRUB_DISABLE_OS_PROBER=true
-EOF
-
-# ---------- 17. 生成 initramfs ----------
+# ---------- 16. 生成 initramfs ----------
 update-initramfs -u -k all
 
 # ---------- 18. 安装引导程序 ----------
@@ -314,28 +307,10 @@ case "${BOOT_MODE}" in
     ;;
 esac
 
-# ---------- 19. 生成 grub.cfg（失败则手写兜底，保证可引导） ----------
-if ! update-grub; then
-  warn "update-grub 失败，改用手写 grub.cfg"
-fi
-if [ ! -s /boot/grub/grub.cfg ] || ! grep -qE '^[[:space:]]*linux' /boot/grub/grub.cfg; then
-  warn "grub.cfg 不可用，写入手写配置"
-  KERNEL="$(ls -1 /boot/vmlinuz-* 2>/dev/null | sort -V | tail -n1 || true)"
-  INITRD="$(ls -1 /boot/initrd.img-* 2>/dev/null | sort -V | tail -n1 || true)"
-  [ -n "${KERNEL}" ] || { echo "错误：找不到内核镜像" >&2; exit 1; }
-  [ -n "${INITRD}" ] || { echo "错误：找不到 initramfs" >&2; exit 1; }
-  mkdir -p /boot/grub
-  cat > /boot/grub/grub.cfg <<EOF
-set default=0
-set timeout=1
-
-menuentry 'Debian GNU/Linux' {
-  search --no-floppy --fs-uuid --set=root ${ROOT_UUID}
-  linux /${KERNEL#/} root=UUID=${ROOT_UUID} ro console=tty0 console=ttyS0,115200n8 net.ifnames=0
-  initrd /${INITRD#/}
-}
-EOF
-fi
+# ---------- 19. 生成 /etc/default/grub 与 /boot/grub/grub.cfg ----------
+# 刻意不用 update-grub：chroot 里 grub-probe 解析不出根分区 UUID，
+# 会把构建机的临时设备名（/dev/loopXp3）写进 grub.cfg，导致实例起不来。
+bash /tmp/guest-grub.sh
 
 # ---------- 20. 启用服务 + 清理裁剪 ----------
 # 拆到 guest-finalize.sh：逻辑独立，方便出问题时单独重跑

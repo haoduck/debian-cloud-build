@@ -31,9 +31,19 @@ case "${BOOT_MODE}" in
 esac
 
 require_root
-for c in debootstrap losetup qemu-img sgdisk mkfs.ext4 mkfs.vfat blkid chroot curl dpkg find; do
+for c in debootstrap losetup qemu-img sgdisk mkfs.ext4 mkfs.vfat blkid chroot curl dpkg find grep; do
   require_cmd "${c}"
 done
+
+# 防护：CRLF 换行会让 guest 内的脚本解析失败（例如 set -o pipefail 变成非法选项名），
+# 在 Windows 上本地编辑过脚本时很容易踩到。
+for f in "${SCRIPT_DIR}/guest-setup.sh" "${SCRIPT_DIR}/guest-finalize.sh" "${SCRIPT_DIR}/guest-grub.sh"; do
+  assert_file "${f}"
+  if grep -qU $'\r' "${f}" 2>/dev/null; then
+    die "脚本 ${f} 含 CRLF 换行，在 guest 内会解析失败，请先转成 LF（dos2unix 或 sed -i 's/\\r$//'）"
+  fi
+done
+
 ensure_debootstrap_suite "${SUITE}"
 install_latest_archive_keyring
 
@@ -122,6 +132,7 @@ PUBKEY_IN_IMAGE=/tmp/build-ssh-pubkey
 PW_IN_IMAGE=/tmp/build-password
 install -m 0755 "${SCRIPT_DIR}/guest-setup.sh"    "${ROOTFS}/tmp/guest-setup.sh"
 install -m 0755 "${SCRIPT_DIR}/guest-finalize.sh" "${ROOTFS}/tmp/guest-finalize.sh"
+install -m 0755 "${SCRIPT_DIR}/guest-grub.sh"     "${ROOTFS}/tmp/guest-grub.sh"
 
 : > "${ROOTFS}${PUBKEY_IN_IMAGE}"
 if [ -s "${SSH_PUBKEY_FILE}" ]; then
@@ -164,8 +175,13 @@ USED_PCT="$(df -P "${ROOTFS}" | awk 'NR==2 {gsub(/%/,"",$5); print $5}')"
 log "镜像内 Debian 版本：${IMAGE_VERSION}｜根分区占用：${USED_PCT}%"
 [ "${USED_PCT}" -lt 95 ] || die "根分区占用 ${USED_PCT}%，空间不足，无法保证首启扩容"
 
-assert_file "${ROOTFS}/boot/grub/grub.cfg"
-grep -qE '^[[:space:]]*linux' "${ROOTFS}/boot/grub/grub.cfg" || die "断言失败：grub.cfg 中没有内核启动项"
+GRUB_CFG="${ROOTFS}/boot/grub/grub.cfg"
+assert_file "${GRUB_CFG}"
+grep -qE '^[[:space:]]*linux' "${GRUB_CFG}" || die "断言失败：grub.cfg 中没有内核启动项"
+grep -q 'root=UUID=' "${GRUB_CFG}" || die "断言失败：grub.cfg 的 root= 不是 UUID（chroot 里 grub-probe 会解析失败）"
+if grep -qE 'root=/dev/(loop|sd|vd|hd)' "${GRUB_CFG}"; then
+  die "断言失败：grub.cfg 里写入了构建机的设备名，导入云平台后会找不到根设备"
+fi
 ls "${ROOTFS}"/boot/vmlinuz-*    >/dev/null 2>&1 || die "断言失败：缺少内核镜像"
 ls "${ROOTFS}"/boot/initrd.img-* >/dev/null 2>&1 || die "断言失败：缺少 initramfs"
 assert_file "${ROOTFS}/etc/ssh/sshd_config"

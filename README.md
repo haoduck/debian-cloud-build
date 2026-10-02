@@ -105,6 +105,7 @@ sudo env DEBIAN_RELEASE=trixie BOOT_MODE=both DISK_SIZE=1G bash scripts/build-im
 scripts/lib.sh                             # 版本/软件源映射表、日志、断言、fstrim 回收
 scripts/build-image.sh                     # 建盘 → 分区 → debootstrap → chroot 配置 → 回收 → 压缩
 scripts/guest-setup.sh                     # 在 chroot 内执行：装包 + 系统配置 + 引导程序
+scripts/guest-grub.sh                      # 在 chroot 内执行：用真实 UUID 生成 grub.cfg
 scripts/guest-finalize.sh                  # 在 chroot 内执行：启用服务 + 清理裁剪
 scripts/finalize-image.sh                  # 镜像级断言 + 转 qcow2 压缩
 ```
@@ -114,15 +115,17 @@ scripts/finalize-image.sh                  # 镜像级断言 + 转 qcow2 压缩
 - 使用 `debootstrap --variant=minbase` 从零安装，只装必需组件
 - 预装：`systemd`、`openssh-server`、`cloud-init`、`cloud-guest-utils`、`chrony`、
   `ifupdown` + `isc-dhcp-client`、`sudo`、`ca-certificates`、`tzdata`、`gdisk`/`fdisk`
-  （后两者是 cloud-init 首启扩容所必需）
+  （后两者是 cloud-init 首启扩容所必需）、`dmidecode`（cloud-init 识别云平台用）
 - 内核使用体积更小的 `linux-image-cloud-amd64`（缺失时自动回退 `linux-image-amd64`）
 - 默认软件源切换为阿里云（EOL 版本自动使用 `debian-archive` 并关闭 `Valid-Until` 校验）
-- cloud-init 已启用，datasource 顺序为 `Aliyun → ConfigDrive → NoCloud`，
-  首启自动 `growpart` + 扩容根分区
+- cloud-init 已启用，**不改动 `datasource_list`**，沿用内置默认表：
+  阿里云 ECS 通过 DMI `product_name = Alibaba Cloud ECS` 被自动识别为 `AliYun`，
+  首启自动注入密钥/主机名并 `growpart` + 扩容根分区
 - SSH：允许 root 登录与密码登录、禁止空密码、`UseDNS no`
 - 网卡固定为 `eth0`（内核参数 `net.ifnames=0`），网络由 ifupdown 走 DHCP
 - 控制台可用：内核参数带 `console=tty0 console=ttyS0,115200n8`（阿里云 VNC/串口能看到启动日志）
-- 引导参数写入 `/etc/default/grub` 后 `update-grub`；BIOS 与 UEFI 共用一份 `grub.cfg`
+- **grub.cfg 用真实根分区 UUID 直接生成**，而不是在 chroot 里跑 `update-grub`
+  （原因见下方常见问题），BIOS 与 UEFI 共用同一份 `grub.cfg`
 - 首启重新生成 SSH host key（`ssh-host-keys.service`），避免所有实例共用同一份密钥
 - 清空 `/etc/machine-id` 与 `/var/lib/cloud/*`，确保 cloud-init 在首启重新初始化
 - 卸载前执行 `fstrim` 回收已删除的块（不做这一步镜像会大一倍以上）
@@ -187,14 +190,29 @@ sudo growpart /dev/vda 3 && sudo resize2fs /dev/vda3
 这两个版本只能用于兼容性测试或隔离环境，不建议对外提供服务。它们的软件源指向阿里云的
 `debian-archive` 镜像（已冻结），因此也不会再收到更新。
 
+### 为什么构建期不用 `update-grub`？
+
+因为构建发生在 chroot 里，此时 `grub-probe` 无法把根分区解析成 UUID，会把**构建机上的
+临时设备名**写进 `grub.cfg`，例如 `root=/dev/loop2p3`。镜像导入云平台后设备名变成
+`/dev/vda3`，initramfs 找不到根设备，实例会掉进 `(initramfs)` 救援 shell 起不来。
+
+所以构建期由 `scripts/guest-grub.sh` 用真实根分区 UUID 直接生成 `grub.cfg`，并在流水线里
+加了断言：`grub.cfg` 必须包含 `root=UUID=`，且不得出现 `/dev/loop*` 之类的构建机设备名。
+
+实例内后续升级内核时，内核包会正常调用 `update-grub`（那时设备解析是正确的），
+`grub.cfg` 会被自动重建，无需人工干预。
+
 ### cloud-init 没有生效
+
+镜像**不设置 `datasource_list`**，沿用 cloud-init 内置默认表（已包含 `AliYun`）。
+阿里云 ECS 会依据 DMI `product_name = Alibaba Cloud ECS` 被自动识别为 `AliYun`。
 
 在实例里检查：
 
 ```bash
 sudo cloud-init status --long
+sudo cat /run/cloud-init/cloud.cfg   # 正常应包含 datasource_list: [ AliYun, None ]
 sudo cat /var/log/cloud-init.log
-sudo ls /etc/systemd/system/cloud-init.target.wants/
 ```
 
 若 cloud-init 根本没跑，多半是导入的镜像不是本项目默认产物，或实例没有元数据服务可达
