@@ -10,8 +10,8 @@
 | 项目 | 说明 |
 |---|---|
 | 支持版本 | Debian **10 (buster) / 11 (bullseye) / 12 (bookworm) / 13 (trixie)**，可一次全出 |
-| 镜像体积 | 实测 Debian 13 双引导版 **约 153 MB**（官方 genericcloud 是 326 MB） |
-| 磁盘占用 | 虚拟盘默认 **1 GiB**，根分区实际占用约 327 MB，**可跑在 1GiB 系统盘上** |
+| 镜像体积 | 实测 Debian 13：`both`+cloud-init **154 MiB**，`bios`+无 cloud-init **124 MiB**（官方 genericcloud 是 326 MB） |
+| 磁盘占用 | 虚拟盘默认 **1 GiB**。1 GiB 整机上实测根分区可用：**583 MiB**（both+cloud-init）→ **726 MiB**（bios+无 cloud-init） |
 | 引导方式 | 默认 **BIOS + UEFI 双引导**；`boot_mode=bios` 时**不建 ESP**，在 1GiB 整机上多出 64 MiB 可用空间 |
 | 初始化 | 默认内置 cloud-init（阿里云 datasource 自动识别）；`cloud_init=no` 省约 60 MB，代价是实例创建时绑定密钥对不再生效 |
 | 软件源 | 全部切换为阿里云镜像源（含 EOL 版本的 archive 源） |
@@ -215,9 +215,9 @@ sudo growpart /dev/vda 2 && sudo resize2fs /dev/vda2
 
 | 配置 | 可用空间 |
 |---|---|
-| `boot_mode=both` + `cloud_init=yes`（默认） | **583 MiB** |
-| `boot_mode=bios` + `cloud_init=yes` | **647 MiB** |
-| `boot_mode=bios` + `cloud_init=no` | **约 700 MiB** |
+| `boot_mode=both` + `cloud_init=yes`（默认） | **583 MiB**（实测） |
+| `boot_mode=bios` + `cloud_init=yes` | **约 661 MiB**（省下 ESP 的 64 MiB） |
+| `boot_mode=bios` + `cloud_init=no` | **726 MiB**（实测） |
 
 > ⚠️ 用 `cloud_init=no` 时，实例创建时**绑定密钥对不会生效**（没有 cloud-init 去拉取公钥），
 > 必须用构建时的 `ssh_pubkey` 把公钥烤进镜像、或用 `password` 设密码，否则登不进去。
