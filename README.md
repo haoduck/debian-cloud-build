@@ -128,7 +128,8 @@ scripts/finalize-image.sh                  # 镜像级断言 + 转 qcow2 压缩
   （原因见下方常见问题），BIOS 与 UEFI 共用同一份 `grub.cfg`
 - 首启重新生成 SSH host key（`ssh-host-keys.service`），避免所有实例共用同一份密钥
 - 清空 `/etc/machine-id` 与 `/var/lib/cloud/*`，确保 cloud-init 在首启重新初始化
-- 卸载前执行 `fstrim` 回收已删除的块（不做这一步镜像会大一倍以上）
+- 卸载前先 `sync` 再 `fstrim`（并做两轮）回收已删除的块：删除文件后脏页还在回写，
+  不等它落盘就 trim，回写会重新占用刚释放的块，镜像会大一倍以上（349MB vs 700MB）
 
 ## 镜像未包含内容
 
