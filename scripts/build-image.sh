@@ -107,22 +107,27 @@ ESP_PART=""
 ESP_UUID=""
 [ "${ROOT_PART_NUM}" = "3" ] && ESP_PART="${LOOP}p2"
 
-# 关闭 metadata_csum_seed：新版 mke2fs（e2fsprogs >= 1.47）默认启用它，
-# 但 Debian 10/11 自带的 grub 2.06 不认识，grub-install 会报
-# "unknown filesystem" 让整个构建失败（实测 bullseye 就是栽在这）。
-# 它只是 e2fsck 的一个优化，关掉没有任何功能损失。
-# 旧版 mke2fs 不认识这个选项时自动退回默认参数。
-if ! mkfs.ext4 -F -q -m 0 -L root -O ^metadata_csum_seed "${ROOT_PART}" 2>/dev/null; then
-  warn "本机 mke2fs 不支持 ^metadata_csum_seed，改用默认特性"
+# 关闭两个「新版 mke2fs 默认开启、老版本工具认不出」的 ext4 特性：
+#   - metadata_csum_seed：Debian 10/11 的 grub 2.06 认不出，grub-install 会报
+#     "unknown filesystem" 直接让构建失败（实测 bullseye）
+#   - orphan_file：Debian 10/11 的 e2fsprogs（1.46/1.44）认不出，实例启动时
+#     initramfs 里的 fsck 会判定文件系统损坏并掉进 (initramfs) 救援 shell
+#     （实测 bullseye 镜像构建成功但起不来）
+# 两个都只是性能优化，关掉没有任何功能损失。
+# 旧版 mke2fs 不认识这些选项时自动退回默认参数。
+if ! mkfs.ext4 -F -q -m 0 -L root -O ^metadata_csum_seed,^orphan_file "${ROOT_PART}" 2>/dev/null; then
+  warn "本机 mke2fs 不支持 ^metadata_csum_seed/^orphan_file，改用默认特性"
   mkfs.ext4 -F -q -m 0 -L root "${ROOT_PART}" || die "mkfs.ext4 创建根文件系统失败"
 fi
 
-# 断言：根文件系统不能带 metadata_csum_seed，否则老版本 grub 装不上引导
+# 断言：根文件系统不能带这两个特性，否则老版本 grub / e2fsck 会出问题
 FS_FEATURES="$(tune2fs -l "${ROOT_PART}" 2>/dev/null | sed -n 's/^Filesystem features: *//p')"
-case " ${FS_FEATURES} " in
-  *" metadata_csum_seed "*)
-    die "根分区带有 metadata_csum_seed 特性，Debian 10/11 的 grub 2.06 无法识别，会导致 grub-install 失败" ;;
-esac
+for bad in metadata_csum_seed orphan_file; do
+  case " ${FS_FEATURES} " in
+    *" ${bad} "*)
+      die "根分区带有 ${bad} 特性，Debian 10/11 的 grub/e2fsck 无法处理，会导致构建失败或实例起不来" ;;
+  esac
+done
 log "根分区特性：${FS_FEATURES}"
 
 ROOT_UUID="$(blkid -s UUID -o value "${ROOT_PART}")"

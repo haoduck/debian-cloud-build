@@ -234,14 +234,20 @@ sudo growpart /dev/vda 2 && sudo resize2fs /dev/vda2
 > 必须用构建时的 `ssh_pubkey` 把公钥烤进镜像、或用 `password` 设密码，否则登不进去。
 > 另外 1 GiB 盘本来也没有多余空间，cloud-init 的自动扩容在这里本来就不会做任何事。
 
-### 构建时 `grub-install: error: unknown filesystem`
+### 老版本镜像构建失败或起不来（`unknown filesystem` / `requires a manual fsck`）
 
-如果构建机上的 `mke2fs`（e2fsprogs ≥ 1.47，例如 Ubuntu 24.04/26.04）默认启用了 ext4 的
-`metadata_csum_seed` 特性，而目标版本自带的是 **grub 2.06（Debian 10/11）**，grub 认不出这个
-文件系统，装引导时就会报这个错（实测只有 bullseye 会挂，因为 Debian 12/13 的 grub 2.12 认识它）。
+新版 `mke2fs`（e2fsprogs ≥ 1.47，例如 Ubuntu 24.04/26.04）默认会启用两个 ext4 特性，
+而 **Debian 10/11 自带的工具认不出来**：
 
-脚本已经在 `mkfs.ext4` 时用 `-O ^metadata_csum_seed` 关掉它，并加了断言防止回归——根文件系统
-一旦带这个特性就直接构建失败。它只是 `e2fsck` 的一个优化，关掉没有任何功能损失。
+| 特性 | 症状 |
+|---|---|
+| `metadata_csum_seed` | grub 2.06 读不了该文件系统 → 构建时 `grub-install: error: unknown filesystem` |
+| `orphan_file` | e2fsprogs 1.46/1.44 不认识 → 实例启动时 `fsck exited with status code 12`、`The root filesystem requires a manual fsck`，掉进 `(initramfs)` 救援 shell |
+
+脚本在 `mkfs.ext4` 时用 `-O ^metadata_csum_seed,^orphan_file` 关掉两者，并加了断言防止回归
+（根文件系统一旦带这两个特性就直接构建失败）。它们都只是性能优化，关掉没有任何功能损失。
+
+Debian 12/13 的 grub 2.12 / e2fsprogs 认识它们，所以只有 buster / bullseye 会受影响。
 
 ### 为什么构建期不用 `update-grub`？
 
