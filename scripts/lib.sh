@@ -50,9 +50,15 @@ resolve_release() {
       CANDIDATES="${aliyun_main}|${aliyun_sec}"
       ;;
     11|bullseye)
-      # bullseye 已于 2026-08-31 EOL：优先用主源，失败再退到 archive
-      DEB_NUM=11; SUITE=bullseye; SEC_SUITE=bullseye-security; EOL=1
-      CANDIDATES="${aliyun_main}|${aliyun_sec} ${aliyun_arch_main}|${aliyun_sec}"
+      # bullseye 已于 2026-08-31 EOL，它的安全套件已经彻底不可用：
+      #   - security.debian.org 已移除
+      #   - archive.debian.org / 阿里云 debian-archive 都没有 bullseye 安全归档
+      #   - 阿里云 debian-security 只剩 Packages 索引，索引里引用的 .deb 全部 404
+      #     （实测 90 个包下载失败，Actions 上就是这么挂的）
+      # 所以 bullseye 只用主源、不带安全源；主源先试主镜像，失败再退到 archive。
+      # 两个候选源都已实测能完整下载全部依赖包。
+      DEB_NUM=11; SUITE=bullseye; SEC_SUITE=""; EOL=1
+      CANDIDATES="${aliyun_main}| ${aliyun_arch_main}|"
       ;;
     10|buster)
       # buster 已于 2024-06-30 EOL：阿里云主源已下架，只能用 archive

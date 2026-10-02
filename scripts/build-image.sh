@@ -40,7 +40,7 @@ case "${BOOT_MODE}" in
 esac
 
 require_root
-for c in debootstrap losetup qemu-img sgdisk mkfs.ext4 mkfs.vfat blkid chroot curl dpkg find grep; do
+for c in debootstrap losetup qemu-img sgdisk mkfs.ext4 mkfs.vfat blkid chroot curl dpkg find grep tune2fs; do
   require_cmd "${c}"
 done
 
@@ -107,7 +107,24 @@ ESP_PART=""
 ESP_UUID=""
 [ "${ROOT_PART_NUM}" = "3" ] && ESP_PART="${LOOP}p2"
 
-mkfs.ext4 -F -q -m 0 -L root "${ROOT_PART}"
+# 关闭 metadata_csum_seed：新版 mke2fs（e2fsprogs >= 1.47）默认启用它，
+# 但 Debian 10/11 自带的 grub 2.06 不认识，grub-install 会报
+# "unknown filesystem" 让整个构建失败（实测 bullseye 就是栽在这）。
+# 它只是 e2fsck 的一个优化，关掉没有任何功能损失。
+# 旧版 mke2fs 不认识这个选项时自动退回默认参数。
+if ! mkfs.ext4 -F -q -m 0 -L root -O ^metadata_csum_seed "${ROOT_PART}" 2>/dev/null; then
+  warn "本机 mke2fs 不支持 ^metadata_csum_seed，改用默认特性"
+  mkfs.ext4 -F -q -m 0 -L root "${ROOT_PART}" || die "mkfs.ext4 创建根文件系统失败"
+fi
+
+# 断言：根文件系统不能带 metadata_csum_seed，否则老版本 grub 装不上引导
+FS_FEATURES="$(tune2fs -l "${ROOT_PART}" 2>/dev/null | sed -n 's/^Filesystem features: *//p')"
+case " ${FS_FEATURES} " in
+  *" metadata_csum_seed "*)
+    die "根分区带有 metadata_csum_seed 特性，Debian 10/11 的 grub 2.06 无法识别，会导致 grub-install 失败" ;;
+esac
+log "根分区特性：${FS_FEATURES}"
+
 ROOT_UUID="$(blkid -s UUID -o value "${ROOT_PART}")"
 [ -n "${ROOT_UUID}" ] || die "无法获取根分区 UUID"
 if [ -n "${ESP_PART}" ]; then

@@ -197,8 +197,19 @@ sudo growpart /dev/vda 2 && sudo resize2fs /dev/vda2
 - **Debian 10 (buster)**：2024-06-30 结束 LTS，**无任何安全更新**
 - **Debian 11 (bullseye)**：2026-08-31 结束 LTS，**无任何安全更新**
 
-这两个版本只能用于兼容性测试或隔离环境，不建议对外提供服务。它们的软件源指向阿里云的
-`debian-archive` 镜像（已冻结），因此也不会再收到更新。
+这两个版本只能用于兼容性测试或隔离环境，不建议对外提供服务。它们的软件源配置：
+
+| 版本 | 主源 | 安全源 |
+|---|---|---|
+| buster | 阿里云 `debian-archive/debian`（含 `buster-updates`） | 阿里云 `debian-archive/debian-security` 的 `buster/updates` |
+| bullseye | 阿里云 `debian`（失败自动退到 `debian-archive/debian`） | **无**（见下） |
+
+> **bullseye 为什么没有安全源**：EOL 后它的安全套件已彻底不可用——`security.debian.org` 已移除、
+> `archive.debian.org` 与阿里云 `debian-archive` 都没有 bullseye 安全归档，而阿里云
+> `debian-security` 只剩 Packages 索引、索引里引用的 `.deb` 文件全部 404（实测 90 个包下载失败，
+> 会让整个构建失败）。所以 bullseye 只用主源、不带安全源，两个候选主源都已实测可完整安装依赖。
+>
+> EOL 版本同样不需要 `Acquire::Check-Valid-Until` 之外的额外处理，脚本会自动关闭该校验。
 
 ### 整机只有 1 GiB 空间，怎么留出最多可用空间？
 
@@ -222,6 +233,15 @@ sudo growpart /dev/vda 2 && sudo resize2fs /dev/vda2
 > ⚠️ 用 `cloud_init=no` 时，实例创建时**绑定密钥对不会生效**（没有 cloud-init 去拉取公钥），
 > 必须用构建时的 `ssh_pubkey` 把公钥烤进镜像、或用 `password` 设密码，否则登不进去。
 > 另外 1 GiB 盘本来也没有多余空间，cloud-init 的自动扩容在这里本来就不会做任何事。
+
+### 构建时 `grub-install: error: unknown filesystem`
+
+如果构建机上的 `mke2fs`（e2fsprogs ≥ 1.47，例如 Ubuntu 24.04/26.04）默认启用了 ext4 的
+`metadata_csum_seed` 特性，而目标版本自带的是 **grub 2.06（Debian 10/11）**，grub 认不出这个
+文件系统，装引导时就会报这个错（实测只有 bullseye 会挂，因为 Debian 12/13 的 grub 2.12 认识它）。
+
+脚本已经在 `mkfs.ext4` 时用 `-O ^metadata_csum_seed` 关掉它，并加了断言防止回归——根文件系统
+一旦带这个特性就直接构建失败。它只是 `e2fsck` 的一个优化，关掉没有任何功能损失。
 
 ### 为什么构建期不用 `update-grub`？
 

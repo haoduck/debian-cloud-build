@@ -48,16 +48,21 @@ fi
 # ---------- 4. 软件源（阿里云，http 免去 ca-certificates 的先有鸡先有蛋问题） ----------
 write_sources() {
   local main="$1" sec="$2"
+  # sec 为空表示该版本没有可用的安全源（例如 EOL 后的 bullseye）
   if [ "${DEB_NUM}" -ge 13 ]; then
     # Debian 13+ 默认使用 deb822 格式
     rm -f /etc/apt/sources.list
     mkdir -p /etc/apt/sources.list.d
-    cat > /etc/apt/sources.list.d/debian.sources <<EOF
+    {
+      cat <<EOF
 Types: deb
 URIs: ${main}
 Suites: ${SUITE} ${SUITE}-updates
 Components: main
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+EOF
+      if [ -n "${sec}" ]; then
+        cat <<EOF
 
 Types: deb
 URIs: ${sec}
@@ -65,13 +70,17 @@ Suites: ${SEC_SUITE}
 Components: main
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 EOF
+      fi
+    } > /etc/apt/sources.list.d/debian.sources
   else
     rm -f /etc/apt/sources.list.d/debian.sources
-    cat > /etc/apt/sources.list <<EOF
-deb ${main} ${SUITE} main
-deb ${main} ${SUITE}-updates main
-deb ${sec} ${SEC_SUITE} main
-EOF
+    {
+      printf 'deb %s %s main\n'         "${main}" "${SUITE}"
+      printf 'deb %s %s-updates main\n' "${main}" "${SUITE}"
+      if [ -n "${sec}" ]; then
+        printf 'deb %s %s main\n' "${sec}" "${SEC_SUITE}"
+      fi
+    } > /etc/apt/sources.list
   fi
 }
 
