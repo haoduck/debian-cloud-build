@@ -83,11 +83,21 @@ nameserver 8.8.8.8
 EOF
 
 # ---------- 6. 安装软件包（逐个候选源尝试） ----------
-PKGS="systemd-sysv dbus kmod e2fsprogs fdisk gdisk dosfstools mtools dmidecode \
-initramfs-tools xz-utils openssh-server libpam-systemd \
-cloud-init cloud-guest-utils \
-ifupdown isc-dhcp-client netbase iproute2 iputils-ping \
-chrony tzdata ca-certificates sudo debian-archive-keyring less nano"
+# 基础包（两种模式都需要）
+PKGS="systemd-sysv dbus kmod e2fsprogs initramfs-tools xz-utils \
+openssh-server libpam-systemd ifupdown isc-dhcp-client netbase \
+iproute2 iputils-ping chrony tzdata ca-certificates sudo \
+debian-archive-keyring less nano"
+
+# cloud-init 及其依赖：growpart 需要 gdisk/fdisk，云平台识别需要 dmidecode
+if [ "${CLOUD_INIT}" = "1" ]; then
+  PKGS="${PKGS} cloud-init cloud-guest-utils gdisk fdisk dmidecode"
+fi
+
+# 只有需要 UEFI 时才装 EFI 引导模块；mtools 是 grub-install 往 ESP 写文件时用的
+if [ "${BOOT_MODE}" != "bios" ]; then
+  PKGS="${PKGS} mtools"
+fi
 
 case "${BOOT_MODE}" in
   bios) GRUB_PKGS="grub-common grub2-common grub-pc-bin" ;;
@@ -216,6 +226,9 @@ iface eth0 inet dhcp
 EOF
 
 # ---------- 11. cloud-init ----------
+# CLOUD_INIT=0 时镜像里根本没有 cloud-init，首启不会自动初始化：
+# 密钥必须在构建时通过 ssh_pubkey 烤进镜像（实例创建时绑定密钥对不会生效）
+if [ "${CLOUD_INIT}" = "1" ]; then
 mkdir -p /etc/cloud/cloud.cfg.d
 cat > /etc/cloud/cloud.cfg.d/99-cloud-build.cfg <<EOF
 # 由 debian-cloud-build 生成
@@ -249,6 +262,9 @@ growpart:
   ignore_growroot_disabled: false
 resize_rootfs: true
 EOF
+else
+  info "CLOUD_INIT=0：跳过 cloud-init 配置（首启不注入密钥/主机名，也不会自动扩容）"
+fi
 
 # ---------- 12. chrony ----------
 mkdir -p /etc/chrony /var/log/chrony /var/lib/chrony

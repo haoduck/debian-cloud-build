@@ -36,6 +36,13 @@ on:
         description: '镜像虚拟磁盘大小，默认 1G（实例系统盘会被 cloud-init 自动扩容）'
         required: false
         default: '1G'
+      cloud_init:
+        description: '是否安装 cloud-init：yes = 支持实例创建时注入密钥/主机名（默认）；no = 省约 60MB，但绑定密钥对不再生效，密钥必须在构建时烤进镜像'
+        type: choice
+        options:
+          - yes
+          - no
+        default: yes
       release_tag:
         description: '要创建或更新的 Release tag，留空则使用 manual-<run number>'
         required: false
@@ -143,12 +150,14 @@ jobs:
           DEBIAN_RELEASE: ${{ matrix.release }}
           BOOT_MODE: ${{ inputs.boot_mode || 'both' }}
           DISK_SIZE: ${{ inputs.disk_size || '1G' }}
+          CLOUD_INIT: ${{ inputs.cloud_init || 'yes' }}
         run: |
           set -euxo pipefail
           sudo env "PATH=${PATH}" \
             DEBIAN_RELEASE="${DEBIAN_RELEASE}" \
             BOOT_MODE="${BOOT_MODE}" \
             DISK_SIZE="${DISK_SIZE}" \
+            CLOUD_INIT="${CLOUD_INIT}" \
             GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
             bash scripts/build-image.sh
           cat "${GITHUB_OUTPUT}"

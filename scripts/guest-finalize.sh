@@ -33,6 +33,7 @@ for u in networking.service ssh.service ssh-host-keys.service chrony.service; do
   enable_unit "${u}" || warn "无法启用 ${u}（可能该版本里单元名不同）"
 done
 
+if [ "${CLOUD_INIT}" = "1" ]; then
 # cloud-init 的服务名随版本变化：
 #   Debian 10/11/12：cloud-init-local / cloud-init / cloud-config / cloud-final
 #   Debian 13（cloud-init 25.x）：cloud-init-local / cloud-init-network / cloud-init-main + cloud-init.target
@@ -50,6 +51,9 @@ if [ "${#ci_units[@]}" -eq 0 ]; then
   exit 1
 fi
 info "cloud-init 已挂到 systemd target（${#ci_units[@]} 个单元）"
+else
+  info "CLOUD_INIT=0：跳过 cloud-init 服务启用"
+fi
 
 # 与 chrony / ifupdown 冲突的服务
 systemctl disable systemd-timesyncd.service >/dev/null 2>&1 || true

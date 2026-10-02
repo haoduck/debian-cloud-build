@@ -20,7 +20,11 @@ assert_file "${DISK_RAW}"
 PART_TABLE="$(sgdisk -p "${DISK_RAW}")"
 printf '%s\n' "${PART_TABLE}"
 printf '%s\n' "${PART_TABLE}" | grep -qE '\bEF02\b' || die "断言失败：缺少 bios_grub(EF02) 分区"
-printf '%s\n' "${PART_TABLE}" | grep -qE '\bEF00\b' || die "断言失败：缺少 ESP(EF00) 分区"
+if [ "${BOOT_MODE}" != "bios" ]; then
+  printf '%s\n' "${PART_TABLE}" | grep -qE '\bEF00\b' || die "断言失败：缺少 ESP(EF00) 分区"
+elif printf '%s\n' "${PART_TABLE}" | grep -qE '\bEF00\b'; then
+  warn "bios 模式下仍然存在 ESP 分区（预期不建，会白白占用空间）"
+fi
 if [ "${BOOT_MODE}" != "uefi" ]; then
   assert_nonzero_first_sector "${DISK_RAW}" 1
   log "断言通过：BIOS 引导代码已写入 bios_grub 分区"

@@ -12,6 +12,7 @@ DISK_SIZE="${DISK_SIZE:-1G}"
 ESP_SIZE="${ESP_SIZE:-64M}"
 INITRAMFS_MODULES="${INITRAMFS_MODULES:-most}"
 NODOC="${NODOC:-1}"
+CLOUD_INIT="${CLOUD_INIT:-1}"
 DEFAULT_USER="${DEFAULT_USER:-debian}"
 TIMEZONE="${TIMEZONE:-Asia/Shanghai}"
 WORK_DIR="${WORK_DIR:-${PWD}/work}"
@@ -22,6 +23,14 @@ SSH_PASSWORD_FILE="${SSH_PASSWORD_FILE:-/tmp/build-password}"
 case "${BOOT_MODE}" in
   both|bios|uefi) ;;
   *) die "boot_mode 只能是 both / bios / uefi，当前为 ${BOOT_MODE}" ;;
+esac
+
+# cloud_init 开关：关掉后不再安装 cloud-init 及其 python3 运行时（约省 60MB），
+# 代价是实例创建时绑定密钥对不再生效，必须依赖构建时烤进镜像的公钥/密码。
+case "$(printf '%s' "${CLOUD_INIT}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on)   CLOUD_INIT=1 ;;
+  0|false|no|off)  CLOUD_INIT=0 ;;
+  *) die "CLOUD_INIT 只能是 1/0（true/false），当前为 ${CLOUD_INIT}" ;;
 esac
 
 resolve_release "${DEBIAN_RELEASE}"
@@ -72,33 +81,58 @@ qemu-img create -f raw "${DISK_RAW}" "${DISK_SIZE}" >/dev/null
 LOOP="$(losetup --show -P -f "${DISK_RAW}")"
 trap cleanup EXIT
 
-log "分区：p1 bios_grub(EF02) / p2 ESP(EF00, ${ESP_SIZE}) / p3 root"
+# bios 模式不需要 ESP：省下的 64MiB 在 1GiB 整机上就是实打实的可用空间
+if [ "${BOOT_MODE}" = "bios" ]; then
+  ROOT_PART_NUM=2
+  log "分区：p1 bios_grub(EF02) / p2 root（bios 模式不建 ESP）"
+else
+  ROOT_PART_NUM=3
+  log "分区：p1 bios_grub(EF02) / p2 ESP(EF00, ${ESP_SIZE}) / p3 root"
+fi
+
 sgdisk --zap-all "${LOOP}" >/dev/null
 sgdisk -n 1:2048:+2048 -t 1:ef02 -c 1:"BIOS boot" "${LOOP}" >/dev/null
-sgdisk -n 2:0:"+${ESP_SIZE}" -t 2:ef00 -c 2:"EFI System" "${LOOP}" >/dev/null
-sgdisk -n 3:0:0 -t 3:8300 -c 3:"root" "${LOOP}" >/dev/null
+if [ "${ROOT_PART_NUM}" = "2" ]; then
+  sgdisk -n 2:0:0 -t 2:8300 -c 2:"root" "${LOOP}" >/dev/null
+else
+  sgdisk -n 2:0:"+${ESP_SIZE}" -t 2:ef00 -c 2:"EFI System" "${LOOP}" >/dev/null
+  sgdisk -n 3:0:0 -t 3:8300 -c 3:"root" "${LOOP}" >/dev/null
+fi
 
 # 重新挂载一次，确保内核读到新的分区表
 losetup -d "${LOOP}"
 LOOP="$(losetup --show -P -f "${DISK_RAW}")"
-ROOT_PART="${LOOP}p3"
-ESP_PART="${LOOP}p2"
+ROOT_PART="${LOOP}p${ROOT_PART_NUM}"
+ESP_PART=""
+ESP_UUID=""
+[ "${ROOT_PART_NUM}" = "3" ] && ESP_PART="${LOOP}p2"
 
 mkfs.ext4 -F -q -m 0 -L root "${ROOT_PART}"
-mkfs.vfat -F 32 -n EFI "${ESP_PART}" >/dev/null
 ROOT_UUID="$(blkid -s UUID -o value "${ROOT_PART}")"
-ESP_UUID="$(blkid -s UUID -o value "${ESP_PART}")"
 [ -n "${ROOT_UUID}" ] || die "无法获取根分区 UUID"
-[ -n "${ESP_UUID}" ] || die "无法获取 ESP UUID"
+if [ -n "${ESP_PART}" ]; then
+  mkfs.vfat -F 32 -n EFI "${ESP_PART}" >/dev/null
+  ESP_UUID="$(blkid -s UUID -o value "${ESP_PART}")"
+  [ -n "${ESP_UUID}" ] || die "无法获取 ESP UUID"
+fi
+
+mount_esp() {
+  [ -n "${ESP_PART}" ] || return 0
+  mkdir -p "${ROOTFS}/boot/efi"
+  mount "${ESP_PART}" "${ROOTFS}/boot/efi"
+}
+umount_esp() {
+  [ -n "${ESP_PART}" ] || return 0
+  umount "${ROOTFS}/boot/efi" 2>/dev/null || true
+}
 
 reset_rootfs() {
-  umount "${ROOTFS}/boot/efi" 2>/dev/null || true
+  umount_esp
   umount "${ROOTFS}" 2>/dev/null || true
   rm -rf "${ROOTFS}"
   mkdir -p "${ROOTFS}"
   mount "${ROOT_PART}" "${ROOTFS}"
-  mkdir -p "${ROOTFS}/boot/efi"
-  mount "${ESP_PART}" "${ROOTFS}/boot/efi"
+  mount_esp
 }
 reset_rootfs
 
@@ -161,6 +195,7 @@ fi
   printf 'TIMEZONE=%q\n'         "${TIMEZONE}"
   printf 'INITRAMFS_MODULES=%q\n' "${INITRAMFS_MODULES}"
   printf 'NODOC=%q\n'            "${NODOC}"
+  printf 'CLOUD_INIT=%q\n'       "${CLOUD_INIT}"
   printf 'PUBKEY_FILE=%q\n'      "${PUBKEY_IN_IMAGE}"
   printf 'PW_FILE=%q\n'          "${PW_IN_IMAGE}"
 } > "${ROOTFS}/tmp/build-params.sh"
@@ -186,7 +221,11 @@ ls "${ROOTFS}"/boot/vmlinuz-*    >/dev/null 2>&1 || die "断言失败：缺少�
 ls "${ROOTFS}"/boot/initrd.img-* >/dev/null 2>&1 || die "断言失败：缺少 initramfs"
 assert_file "${ROOTFS}/etc/ssh/sshd_config"
 [ -s "${ROOTFS}/etc/network/interfaces" ] || die "断言失败：缺少 /etc/network/interfaces"
-[ -e "${ROOTFS}/etc/cloud/cloud.cfg.d/99-cloud-build.cfg" ] || die "断言失败：缺少 cloud-init 配置"
+if [ "${CLOUD_INIT}" = "1" ]; then
+  [ -e "${ROOTFS}/etc/cloud/cloud.cfg.d/99-cloud-build.cfg" ] || die "断言失败：缺少 cloud-init 配置"
+else
+  [ ! -e "${ROOTFS}/usr/bin/cloud-init" ] || warn "CLOUD_INIT=0 但镜像里仍然存在 cloud-init"
+fi
 [ ! -s "${ROOTFS}/etc/machine-id" ] || die "断言失败：/etc/machine-id 未清空"
 case "${BOOT_MODE}" in
   uefi|both)
@@ -208,11 +247,10 @@ trap - EXIT
 log "重新挂载做第二轮回收"
 LOOP="$(losetup --show -P -f "${DISK_RAW}")"
 mount "${ROOT_PART}" "${ROOTFS}"
-mkdir -p "${ROOTFS}/boot/efi"
-mount "${ESP_PART}" "${ROOTFS}/boot/efi"
+mount_esp
 trim_fs "${ROOTFS}"
 trim_fs "${ROOTFS}/boot/efi"
-umount "${ROOTFS}/boot/efi"
+umount_esp
 umount "${ROOTFS}"
 losetup -d "${LOOP}"
 LOOP=""

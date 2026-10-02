@@ -11,9 +11,9 @@
 |---|---|
 | 支持版本 | Debian **10 (buster) / 11 (bullseye) / 12 (bookworm) / 13 (trixie)**，可一次全出 |
 | 镜像体积 | 实测 Debian 13 双引导版 **约 153 MB**（官方 genericcloud 是 326 MB） |
-| 磁盘占用 | 虚拟盘默认 **1 GiB**，根分区实际占用约 327 MB，**可跑在 1GB 系统盘上** |
-| 引导方式 | 默认 **BIOS + UEFI 双引导**（GPT：bios_grub + ESP + root），也可只出单一模式 |
-| 初始化 | 内置 cloud-init（含阿里云 datasource），支持密钥对注入、主机名、首启自动扩容 |
+| 磁盘占用 | 虚拟盘默认 **1 GiB**，根分区实际占用约 327 MB，**可跑在 1GiB 系统盘上** |
+| 引导方式 | 默认 **BIOS + UEFI 双引导**；`boot_mode=bios` 时**不建 ESP**，在 1GiB 整机上多出 64 MiB 可用空间 |
+| 初始化 | 默认内置 cloud-init（阿里云 datasource 自动识别）；`cloud_init=no` 省约 60 MB，代价是实例创建时绑定密钥对不再生效 |
 | 软件源 | 全部切换为阿里云镜像源（含 EOL 版本的 archive 源） |
 | 时区 | `Asia/Shanghai`，chrony 使用 `ntp.aliyun.com` |
 
@@ -54,7 +54,8 @@
 | `boot_mode` | `both`（默认，BIOS+UEFI）/ `bios` / `uefi` |
 | `ssh_pubkey` | 注入镜像的 SSH 公钥（`root` 与 `debian` 用户都写入）。填 `none` 则不注入 |
 | `password` | 同时为 `root` 与 `debian` 设置的登录密码，留空则不设密码 |
-| `disk_size` | 镜像虚拟磁盘大小，默认 `1G` |
+| `disk_size` | 镜像虚拟磁盘大小，默认 `1G`。**不能大于实例的系统盘**，否则导入会失败 |
+| `cloud_init` | `yes`（默认）/ `no`。`no` 省约 60 MB，但绑定密钥对不再生效，密钥必须在构建时烤进镜像 |
 | `release_tag` | 要发布的 release tag，留空则用 `manual-<run number>` |
 
 构建完成后：
@@ -89,7 +90,8 @@ sudo env DEBIAN_RELEASE=trixie BOOT_MODE=both DISK_SIZE=1G bash scripts/build-im
 | `DEBIAN_RELEASE` | 必填 | `trixie` / `bookworm` / `bullseye` / `buster` |
 | `BOOT_MODE` | `both` | `both` / `bios` / `uefi` |
 | `DISK_SIZE` | `1G` | 镜像虚拟磁盘大小 |
-| `ESP_SIZE` | `64M` | EFI 系统分区大小（官方镜像是 512M，这里刻意压到 64M） |
+| `ESP_SIZE` | `64M` | EFI 系统分区大小；**只在 `boot_mode` 含 uefi 时才创建**（官方镜像是 512M） |
+| `CLOUD_INIT` | `1` | 置 `0` 不装 cloud-init（省约 60 MB，但实例创建时绑定密钥对不再生效） |
 | `INITRAMFS_MODULES` | `most` | 改成 `dep` 能再省十几 MB，但个别虚拟化平台可能起不来 |
 | `NODOC` | `1` | 删除文档/手册/locale/i18n，只保留各包 `copyright` |
 | `DEFAULT_USER` | `debian` | 默认普通用户 |
@@ -113,9 +115,11 @@ scripts/finalize-image.sh                  # 镜像级断言 + 转 qcow2 压缩
 ## 镜像已做的定制
 
 - 使用 `debootstrap --variant=minbase` 从零安装，只装必需组件
-- 预装：`systemd`、`openssh-server`、`cloud-init`、`cloud-guest-utils`、`chrony`、
-  `ifupdown` + `isc-dhcp-client`、`sudo`、`ca-certificates`、`tzdata`、`gdisk`/`fdisk`
-  （后两者是 cloud-init 首启扩容所必需）、`dmidecode`（cloud-init 识别云平台用）
+- 分区布局：GPT + `bios_grub`(1 MiB) +［ESP，仅 UEFI 需要，默认 64 MiB］+ root（剩余全部）。
+  `boot_mode=bios` 时**不创建 ESP**，那 64 MiB 直接归根分区
+- 预装：`systemd`、`openssh-server`、`chrony`、`ifupdown` + `isc-dhcp-client`、`sudo`、
+  `ca-certificates`、`tzdata`；`cloud_init=yes` 时另装 `cloud-init`、`cloud-guest-utils`、
+  `gdisk`/`fdisk`（growpart 需要）、`dmidecode`（云平台识别需要）
 - 内核使用体积更小的 `linux-image-cloud-amd64`（缺失时自动回退 `linux-image-amd64`）
 - 默认软件源切换为阿里云（EOL 版本自动使用 `debian-archive` 并关闭 `Valid-Until` 校验）
 - cloud-init 已启用，**不改动 `datasource_list`**，沿用内置默认表：
@@ -165,16 +169,21 @@ scripts/finalize-image.sh                  # 镜像级断言 + 转 qcow2 压缩
 - 填了 `none` → 镜像内不含任何公钥，必须在创建实例时绑定密钥对
   （cloud-init 会把它追加进 `authorized_keys`），或用控制台 VNC 登录
 - 镜像默认不预设密码，只有在构建时填了 `password` 才有密码
+- **`cloud_init=no` 的镜像**：绑定密钥对不会生效，只能靠镜像内烤好的公钥或密码登录
 
 ### 系统盘没有自动扩容
 
-cloud-init 首启会执行 `growpart` + `resize_rootfs`。若没生效，登录后手动执行：
+**只有系统盘大于镜像虚拟盘时才有东西可扩**（1 GiB 系统盘 + 1 GiB 镜像时不会发生扩容）。
+cloud-init 首启会执行 `growpart` + `resize_rootfs`；若没生效，登录后手动执行：
 
 ```bash
+# boot_mode=both / uefi：根分区是 p3
 sudo growpart /dev/vda 3 && sudo resize2fs /dev/vda3
+# boot_mode=bios（没有 ESP）：根分区是 p2
+sudo growpart /dev/vda 2 && sudo resize2fs /dev/vda2
 ```
 
-（镜像内根分区固定是第 3 个分区：p1 是 bios_grub，p2 是 ESP。）
+（分区布局：p1 固定是 `bios_grub`；含 UEFI 时 p2 是 ESP、p3 是 root；纯 BIOS 时 p2 就是 root。）
 
 ### 想进一步压缩镜像体积
 
@@ -190,6 +199,29 @@ sudo growpart /dev/vda 3 && sudo resize2fs /dev/vda3
 
 这两个版本只能用于兼容性测试或隔离环境，不建议对外提供服务。它们的软件源指向阿里云的
 `debian-archive` 镜像（已冻结），因此也不会再收到更新。
+
+### 整机只有 1 GiB 空间，怎么留出最多可用空间？
+
+阿里云要求**系统盘容量 ≥ 镜像虚拟大小**，所以 1 GiB 的实例系统盘只装得下虚拟盘 ≤ 1 GiB 的镜像：
+`disk_size` **不能调大**（比如 2G），否则导入直接失败。1 GiB 整机的空间账本：
+
+| 项目 | 大小 | 说明 |
+|---|---|---|
+| GPT + `bios_grub` | ~2 MiB | 必须 |
+| ESP | 64 MiB | **`boot_mode=bios` 时不创建，直接省下** |
+| root 文件系统 | 剩余全部 | 已用约 327 MiB |
+
+按需组合（实测根分区可用空间）：
+
+| 配置 | 可用空间 |
+|---|---|
+| `boot_mode=both` + `cloud_init=yes`（默认） | **583 MiB** |
+| `boot_mode=bios` + `cloud_init=yes` | **647 MiB** |
+| `boot_mode=bios` + `cloud_init=no` | **约 700 MiB** |
+
+> ⚠️ 用 `cloud_init=no` 时，实例创建时**绑定密钥对不会生效**（没有 cloud-init 去拉取公钥），
+> 必须用构建时的 `ssh_pubkey` 把公钥烤进镜像、或用 `password` 设密码，否则登不进去。
+> 另外 1 GiB 盘本来也没有多余空间，cloud-init 的自动扩容在这里本来就不会做任何事。
 
 ### 为什么构建期不用 `update-grub`？
 
