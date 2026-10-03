@@ -115,6 +115,8 @@ case "${BOOT_MODE}" in
 esac
 
 installed=0
+WIN_MAIN=""
+WIN_SEC=""
 for cand in ${CANDIDATES}; do
   main="${cand%%|*}"
   sec="${cand##*|}"
@@ -125,17 +127,100 @@ for cand in ${CANDIDATES}; do
     continue
   fi
   if apt-get install -y --no-install-recommends ${PKGS} ${GRUB_PKGS} linux-image-cloud-amd64; then
-    installed=1
+    installed=1; WIN_MAIN="${main}"; WIN_SEC="${sec}"
     break
   fi
   warn "cloud 内核安装失败，回退到 linux-image-amd64"
   if apt-get install -y --no-install-recommends ${PKGS} ${GRUB_PKGS} linux-image-amd64; then
-    installed=1
+    installed=1; WIN_MAIN="${main}"; WIN_SEC="${sec}"
     break
   fi
   warn "当前候选源安装失败，换下一个候选源"
 done
 [ "${installed}" = "1" ] || { echo "错误：所有候选源都安装失败" >&2; exit 1; }
+
+# ---------- 6b. 镜像内默认软件源：阿里云内网源 ----------
+# 构建期必须用公网源（构建机不在阿里云 VPC 里，内网源连不通），所以先按公网源把包装完，
+# 再把最终写进镜像的源换成内网源：内网源在 ECS 上走 VPC，速度更快且不计流量。
+# 不在阿里云上跑（或内网源不通）时，用 /root/switch-apt-mirror.sh 一键切回公网源。
+FINAL_MAIN="${WIN_MAIN//mirrors.aliyun.com/mirrors.cloud.aliyuncs.com}"
+FINAL_SEC="${WIN_SEC//mirrors.aliyun.com/mirrors.cloud.aliyuncs.com}"
+write_sources "${FINAL_MAIN}" "${FINAL_SEC}"
+info "镜像内默认软件源：${FINAL_MAIN}${FINAL_SEC:+  和  ${FINAL_SEC}}"
+
+# ---------- 6c. /root 下的一键切源脚本 ----------
+cat > /root/switch-apt-mirror.sh <<'SWITCH_EOF'
+#!/bin/bash
+# 一键切换 apt 软件源（需要 root）
+#
+#   sudo /root/switch-apt-mirror.sh            # 切到公网源 mirrors.aliyun.com
+#   sudo /root/switch-apt-mirror.sh internal   # 切回内网源 mirrors.cloud.aliyuncs.com
+#
+# 镜像出厂默认是内网源，它只有在阿里云 ECS 上才能连通；在本地 QEMU 或其它云上运行时，
+# 先执行本脚本切到公网源。
+set -euo pipefail
+
+INTERNAL_HOST="mirrors.cloud.aliyuncs.com"
+PUBLIC_HOST="mirrors.aliyun.com"
+
+TARGET="${1:-public}"
+case "${TARGET}" in
+  public|公网)   FROM="${INTERNAL_HOST}"; TO="${PUBLIC_HOST}"; BACK="internal" ;;
+  internal|内网) FROM="${PUBLIC_HOST}";   TO="${INTERNAL_HOST}"; BACK="public" ;;
+  *) echo "用法: $0 [public|internal]（默认 public，即切到 ${PUBLIC_HOST}）" >&2; exit 2 ;;
+esac
+
+[ "$(id -u)" -eq 0 ] || { echo "需要 root 权限，请用 sudo 运行" >&2; exit 1; }
+
+FILES=""
+if [ -f /etc/apt/sources.list ]; then FILES="${FILES} /etc/apt/sources.list"; fi
+for f in /etc/apt/sources.list.d/*.sources; do
+  [ -f "$f" ] || continue
+  FILES="${FILES} ${f}"
+done
+[ -n "${FILES}" ] || { echo "找不到 apt 源文件" >&2; exit 1; }
+
+changed=0
+for f in ${FILES}; do
+  if grep -q "${FROM}" "$f"; then
+    cp -f "$f" "${f}.bak"
+    sed -i "s|${FROM}|${TO}|g" "$f"
+    echo "已更新 ${f}（备份为 ${f}.bak）"
+    changed=1
+  fi
+done
+
+if [ "${changed}" = "0" ]; then
+  echo "这些文件里没有 ${FROM}，无需修改：${FILES}"
+  exit 0
+fi
+
+echo
+echo "当前源："
+grep -hE '^(deb |URIs:)' ${FILES} | sed 's/^/  /' || true
+echo
+echo "执行 apt-get update 验证连通性 ..."
+# 注意：apt-get update 在「所有源都拉不到」时也可能返回 0（只打 W: 警告），
+# 所以必须同时检查退出码和输出里有没有失败信息。
+# 限制超时与重试次数，切到不可达的源时快速失败，而不是卡住几分钟。
+set +e
+OUT="$(apt-get update -o Acquire::http::Timeout=10 -o Acquire::Retries=0 2>&1)"
+RC=$?
+set -e
+printf '%s\n' "${OUT}"
+
+if [ "${RC}" -eq 0 ] && ! printf '%s' "${OUT}" | grep -qE 'Failed to fetch|Unable to fetch|Could not resolve'; then
+  echo
+  echo "✅ 已切换到 ${TO}，apt 更新成功"
+else
+  echo
+  echo "⚠️  已写入 ${TO}，但 apt-get update 没有成功拉取索引。" >&2
+  echo "    如果你不在对应环境里，可以执行：sudo $0 ${BACK}" >&2
+  exit 1
+fi
+SWITCH_EOF
+chmod 0755 /root/switch-apt-mirror.sh
+info "已放置 /root/switch-apt-mirror.sh（默认切公网源，internal 参数切回内网源）"
 
 # ---------- 7. 时区 / locale ----------
 ln -snf "/usr/share/zoneinfo/${TIMEZONE}" /etc/localtime

@@ -122,6 +122,10 @@ scripts/finalize-image.sh                  # 镜像级断言 + 转 qcow2 压缩
   `gdisk`/`fdisk`（growpart 需要）、`dmidecode`（云平台识别需要）
 - 内核使用体积更小的 `linux-image-cloud-amd64`（缺失时自动回退 `linux-image-amd64`）
 - 默认软件源切换为阿里云（EOL 版本自动使用 `debian-archive` 并关闭 `Valid-Until` 校验）
+- **镜像内最终的 apt 源指向阿里云内网源 `mirrors.cloud.aliyuncs.com`**（在 ECS 上走 VPC，
+  更快且不计流量）。构建期仍用公网源 `mirrors.aliyun.com`——构建机不在 VPC 里，内网源连不通
+- 镜像 `/root/switch-apt-mirror.sh`：一键切源（默认切到公网 `mirrors.aliyun.com`，
+  加 `internal` 参数切回内网源），不在阿里云上运行时先执行它
 - cloud-init 已启用，**不改动 `datasource_list`**，沿用内置默认表：
   阿里云 ECS 通过 DMI `product_name = Alibaba Cloud ECS` 被自动识别为 `AliYun`，
   首启自动注入密钥/主机名并 `growpart` + 扩容根分区
@@ -210,6 +214,19 @@ sudo growpart /dev/vda 2 && sudo resize2fs /dev/vda2
 > 会让整个构建失败）。所以 bullseye 只用主源、不带安全源，两个候选主源都已实测可完整安装依赖。
 >
 > EOL 版本同样不需要 `Acquire::Check-Valid-Until` 之外的额外处理，脚本会自动关闭该校验。
+
+### apt 装不了包 / 提示连不上软件源（不在阿里云上运行）
+
+镜像出厂把 apt 源指向了阿里云**内网源** `mirrors.cloud.aliyuncs.com`，它**只有在阿里云 ECS 上
+才能连通**。在本地 QEMU 或其它云上运行时，先切回公网源：
+
+```bash
+sudo /root/switch-apt-mirror.sh            # 切到公网 mirrors.aliyun.com
+sudo /root/switch-apt-mirror.sh internal   # 再切回内网源
+```
+
+脚本会先把原文件备份成 `*.bak` 再改写，最后自动跑一次 `apt-get update` 验证连通性；
+若更新失败会明确提示用哪个参数切回去。
 
 ### 整机只有 1 GiB 空间，怎么留出最多可用空间？
 

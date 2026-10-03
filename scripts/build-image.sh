@@ -248,6 +248,14 @@ if [ "${CLOUD_INIT}" = "1" ]; then
 else
   [ ! -e "${ROOTFS}/usr/bin/cloud-init" ] || warn "CLOUD_INIT=0 但镜像里仍然存在 cloud-init"
 fi
+
+# 镜像内的默认软件源必须是阿里云内网源，并带上切源脚本
+if ! grep -rq 'mirrors.cloud.aliyuncs.com' \
+      "${ROOTFS}/etc/apt/sources.list" "${ROOTFS}/etc/apt/sources.list.d/" 2>/dev/null; then
+  die "断言失败：镜像内的 apt 源没有指向阿里云内网源 mirrors.cloud.aliyuncs.com"
+fi
+assert_file "${ROOTFS}/root/switch-apt-mirror.sh"
+[ -x "${ROOTFS}/root/switch-apt-mirror.sh" ] || die "断言失败：/root/switch-apt-mirror.sh 不可执行"
 [ ! -s "${ROOTFS}/etc/machine-id" ] || die "断言失败：/etc/machine-id 未清空"
 case "${BOOT_MODE}" in
   uefi|both)
