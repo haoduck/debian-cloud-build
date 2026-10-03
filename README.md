@@ -24,6 +24,8 @@
 2. 在阿里云导入自定义镜像（镜像格式选 **QCOW2**）：
    - 默认产出的镜像 **BIOS 和 UEFI 都能启动**，「启动模式」选哪个都行
    - 如果构建时选了单一模式（`boot_mode=bios` / `uefi`），导入时「启动模式」必须与之一致
+   - 📖 完整步骤（上传 OSS → 控制台导入 → 勾选「检测后执行修复 / 安装云助手」）见
+     **[import_custom_image_guide.md](import_custom_image_guide.md)**
 3. 创建 ECS 实例：
    - 可绑定 SSH 密钥对（镜像内已内置公钥，非必需；cloud-init 会把绑定的公钥追加进去）
    - **系统盘建议 ≥ 20 GiB**：阿里云控制台一般选不到 1 GiB 的系统盘。镜像虚拟盘是 1 GiB，
@@ -103,6 +105,7 @@ sudo env DEBIAN_RELEASE=trixie BOOT_MODE=both DISK_SIZE=1G bash scripts/build-im
 ## 目录结构
 
 ```
+import_custom_image_guide.md               # 阿里云导入自定义镜像的详细步骤（上传 OSS → 控制台导入）
 .github/workflows/build-debian-image.yml   # 流水线：矩阵构建多个版本 + 发布 Release
 scripts/lib.sh                             # 版本/软件源映射表、日志、断言、fstrim 回收
 scripts/build-image.sh                     # 建盘 → 分区 → debootstrap → chroot 配置 → 回收 → 压缩
