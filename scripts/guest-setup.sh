@@ -139,16 +139,9 @@ for cand in ${CANDIDATES}; do
 done
 [ "${installed}" = "1" ] || { echo "错误：所有候选源都安装失败" >&2; exit 1; }
 
-# ---------- 6b. 镜像内默认软件源：阿里云内网源 ----------
-# 构建期必须用公网源（构建机不在阿里云 VPC 里，内网源连不通），所以先按公网源把包装完，
-# 再把最终写进镜像的源换成内网源：内网源在 ECS 上走 VPC，速度更快且不计流量。
-# 不在阿里云上跑（或内网源不通）时，用 /root/switch-apt-mirror.sh 一键切回公网源。
-FINAL_MAIN="${WIN_MAIN//mirrors.aliyun.com/mirrors.cloud.aliyuncs.com}"
-FINAL_SEC="${WIN_SEC//mirrors.aliyun.com/mirrors.cloud.aliyuncs.com}"
-write_sources "${FINAL_MAIN}" "${FINAL_SEC}"
-info "镜像内默认软件源：${FINAL_MAIN}${FINAL_SEC:+  和  ${FINAL_SEC}}"
-
-# ---------- 6c. /root 下的一键切源脚本 ----------
+# ---------- 6b. /root 下的一键切源脚本 ----------
+# 注意：镜像内的默认软件源是在最后一步（步骤 20）才切换成阿里云内网源的，
+# 因为构建期内网源连不通，必须先用公网源把包装完。
 cat > /root/switch-apt-mirror.sh <<'SWITCH_EOF'
 #!/bin/bash
 # 一键切换 apt 软件源（需要 root）
@@ -422,6 +415,42 @@ esac
 # 会把构建机的临时设备名（/dev/loopXp3）写进 grub.cfg，导致实例起不来。
 bash /tmp/guest-grub.sh
 
-# ---------- 19. 启用服务 + 清理裁剪 ----------
+# ---------- 19. 自定义初始化（在 chroot 内以 root 执行，注意不是真的开机） ----------
+# CUSTOMIZE_COMMANDS 非空时执行它；否则执行仓库里的 scripts/customize.sh。
+# 放在这里的原因：项目自身配置（用户/sshd/网络/cloud-init/grub）都已完成，
+# 且此时 apt 源还是公网（可以正常装包），内网源切换与清理裁剪都在后面。
+if [ -n "${CUSTOMIZE_COMMANDS}" ]; then
+  info "执行自定义初始化命令（来自构建输入）"
+  printf '%s\n' "${CUSTOMIZE_COMMANDS}"
+  bash -c "${CUSTOMIZE_COMMANDS}"
+else
+  info "执行仓库内的自定义脚本 scripts/customize.sh"
+  bash /tmp/customize.sh
+fi
+info "自定义初始化完成"
+
+# ---------- 20. 镜像内默认软件源：阿里云内网源（只替换主机名） ----------
+# 只把 mirrors.aliyun.com 换成 mirrors.cloud.aliyuncs.com：
+# 如果上一步的自定义钩子已经把源换成别的（例如 deb.debian.org），这里不会覆盖它。
+swap_mirror_host() {
+  local from="mirrors.aliyun.com"
+  local to="mirrors.cloud.aliyuncs.com"
+  local f changed=0
+  for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do
+    [ -f "$f" ] || continue
+    if grep -q "${from}" "$f"; then
+      sed -i "s|${from}|${to}|g" "$f"
+      changed=1
+    fi
+  done
+  if [ "${changed}" = "1" ]; then
+    info "镜像内默认软件源已切换为内网源：${to}（构建期用的是 ${WIN_MAIN:-未知}）"
+  else
+    warn "源文件里没有 ${from}，跳过内网源切换（可能是自定义钩子改过源）"
+  fi
+}
+swap_mirror_host
+
+# ---------- 21. 启用服务 + 清理裁剪 ----------
 # 拆到 guest-finalize.sh：逻辑独立，方便出问题时单独重跑
 bash /tmp/guest-finalize.sh

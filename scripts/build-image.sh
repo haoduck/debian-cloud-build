@@ -13,6 +13,8 @@ ESP_SIZE="${ESP_SIZE:-64M}"
 INITRAMFS_MODULES="${INITRAMFS_MODULES:-most}"
 NODOC="${NODOC:-1}"
 CLOUD_INIT="${CLOUD_INIT:-1}"
+# 构建时在 chroot 内执行的自定义命令；留空则执行仓库里的 scripts/customize.sh
+CUSTOMIZE_COMMANDS="${CUSTOMIZE_COMMANDS:-}"
 DEFAULT_USER="${DEFAULT_USER:-debian}"
 TIMEZONE="${TIMEZONE:-Asia/Shanghai}"
 WORK_DIR="${WORK_DIR:-${PWD}/work}"
@@ -46,7 +48,8 @@ done
 
 # 防护：CRLF 换行会让 guest 内的脚本解析失败（例如 set -o pipefail 变成非法选项名），
 # 在 Windows 上本地编辑过脚本时很容易踩到。
-for f in "${SCRIPT_DIR}/guest-setup.sh" "${SCRIPT_DIR}/guest-finalize.sh" "${SCRIPT_DIR}/guest-grub.sh"; do
+for f in "${SCRIPT_DIR}/guest-setup.sh" "${SCRIPT_DIR}/guest-finalize.sh" \
+         "${SCRIPT_DIR}/guest-grub.sh" "${SCRIPT_DIR}/customize.sh"; do
   assert_file "${f}"
   if grep -qU $'\r' "${f}" 2>/dev/null; then
     die "脚本 ${f} 含 CRLF 换行，在 guest 内会解析失败，请先转成 LF（dos2unix 或 sed -i 's/\\r$//'）"
@@ -189,6 +192,7 @@ PW_IN_IMAGE=/tmp/build-password
 install -m 0755 "${SCRIPT_DIR}/guest-setup.sh"    "${ROOTFS}/tmp/guest-setup.sh"
 install -m 0755 "${SCRIPT_DIR}/guest-finalize.sh" "${ROOTFS}/tmp/guest-finalize.sh"
 install -m 0755 "${SCRIPT_DIR}/guest-grub.sh"     "${ROOTFS}/tmp/guest-grub.sh"
+install -m 0755 "${SCRIPT_DIR}/customize.sh"      "${ROOTFS}/tmp/customize.sh"
 
 : > "${ROOTFS}${PUBKEY_IN_IMAGE}"
 if [ -s "${SSH_PUBKEY_FILE}" ]; then
@@ -218,6 +222,7 @@ fi
   printf 'INITRAMFS_MODULES=%q\n' "${INITRAMFS_MODULES}"
   printf 'NODOC=%q\n'            "${NODOC}"
   printf 'CLOUD_INIT=%q\n'       "${CLOUD_INIT}"
+  printf 'CUSTOMIZE_COMMANDS=%q\n' "${CUSTOMIZE_COMMANDS}"
   printf 'PUBKEY_FILE=%q\n'      "${PUBKEY_IN_IMAGE}"
   printf 'PW_FILE=%q\n'          "${PW_IN_IMAGE}"
 } > "${ROOTFS}/tmp/build-params.sh"
@@ -249,11 +254,25 @@ else
   [ ! -e "${ROOTFS}/usr/bin/cloud-init" ] || warn "CLOUD_INIT=0 但镜像里仍然存在 cloud-init"
 fi
 
-# 镜像内的默认软件源必须是阿里云内网源，并带上切源脚本
-if ! grep -rq 'mirrors.cloud.aliyuncs.com' \
-      "${ROOTFS}/etc/apt/sources.list" "${ROOTFS}/etc/apt/sources.list.d/" 2>/dev/null; then
-  die "断言失败：镜像内的 apt 源没有指向阿里云内网源 mirrors.cloud.aliyuncs.com"
+# 镜像内的默认软件源：正常应已切换为阿里云内网源；
+# 若自定义钩子把源改成了别的（既非内网也非公网阿里云），只提示不报错。
+if grep -rq 'mirrors.cloud.aliyuncs.com' \
+     "${ROOTFS}/etc/apt/sources.list" "${ROOTFS}/etc/apt/sources.list.d/" 2>/dev/null; then
+  :
+elif grep -rq 'mirrors.aliyun.com' \
+       "${ROOTFS}/etc/apt/sources.list" "${ROOTFS}/etc/apt/sources.list.d/" 2>/dev/null; then
+  die "断言失败：镜像内源仍指向公网 mirrors.aliyun.com，说明内网源切换没生效"
+else
+  warn "镜像内源不是阿里云（可能被自定义钩子改过），跳过内网源断言"
 fi
+# 构建期临时脚本不能残留在镜像的 /tmp 里
+for leftover in /tmp/guest-setup.sh /tmp/guest-finalize.sh /tmp/guest-grub.sh \
+                /tmp/customize.sh /tmp/build-params.sh; do
+  if [ -e "${ROOTFS}${leftover}" ]; then
+    die "断言失败：/tmp 里残留了构建脚本 ${leftover}"
+  fi
+done
+
 assert_file "${ROOTFS}/root/switch-apt-mirror.sh"
 [ -x "${ROOTFS}/root/switch-apt-mirror.sh" ] || die "断言失败：/root/switch-apt-mirror.sh 不可执行"
 [ ! -s "${ROOTFS}/etc/machine-id" ] || die "断言失败：/etc/machine-id 未清空"

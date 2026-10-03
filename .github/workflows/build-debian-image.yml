@@ -43,6 +43,10 @@ on:
           - yes
           - no
         default: yes
+      customize:
+        description: '镜像打包前执行的自定义初始化命令（在 chroot 内以 root 执行；留空则执行仓库里的 scripts/customize.sh）。多行命令建议写进该脚本；不要在这里写密码/密钥。'
+        required: false
+        default: ''
       release_tag:
         description: '要创建或更新的 Release tag，留空则使用 manual-<run number>'
         required: false
@@ -151,6 +155,7 @@ jobs:
           BOOT_MODE: ${{ inputs.boot_mode || 'both' }}
           DISK_SIZE: ${{ inputs.disk_size || '1G' }}
           CLOUD_INIT: ${{ inputs.cloud_init || 'yes' }}
+          CUSTOMIZE_COMMANDS: ${{ inputs.customize }}
         run: |
           set -euxo pipefail
           sudo env "PATH=${PATH}" \
@@ -158,6 +163,7 @@ jobs:
             BOOT_MODE="${BOOT_MODE}" \
             DISK_SIZE="${DISK_SIZE}" \
             CLOUD_INIT="${CLOUD_INIT}" \
+            CUSTOMIZE_COMMANDS="${CUSTOMIZE_COMMANDS}" \
             GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
             bash scripts/build-image.sh
           cat "${GITHUB_OUTPUT}"

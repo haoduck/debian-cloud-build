@@ -58,6 +58,7 @@
 | `password` | 同时为 `root` 与 `debian` 设置的登录密码，留空则不设密码 |
 | `disk_size` | 镜像虚拟磁盘大小，默认 `1G`。**不能大于实例的系统盘**，否则导入会失败 |
 | `cloud_init` | `yes`（默认）/ `no`。`no` 省约 60 MB，但绑定密钥对不再生效，密钥必须在构建时烤进镜像 |
+| `customize` | 打包前在镜像内执行的自定义初始化命令（留空则执行 `scripts/customize.sh`）。适合简单命令，复杂逻辑写进脚本；不要写密码/密钥 |
 | `release_tag` | 要发布的 release tag，留空则用 `manual-<run number>` |
 
 构建完成后：
@@ -67,6 +68,41 @@
   （版本号取自镜像内的 `/etc/debian_version`）
 - 同时作为 workflow artifact 保留 14 天
 
+
+## 往镜像里加东西（自定义初始化）
+
+构建时可以把你的初始化内容**烘焙进镜像**（装包、写配置、建用户、铺业务文件…），两种方式：
+
+1. **写进仓库脚本（推荐，适合复杂逻辑）**：编辑 `scripts/customize.sh`，构建时自动执行
+2. **构建时直接传命令（适合简单场景）**：GitHub Actions 的 `customize` 输入，或本地构建的
+   `CUSTOMIZE_COMMANDS` 环境变量；**传了它就不会再执行 `scripts/customize.sh`**
+
+```bash
+# 本地示例
+sudo env DEBIAN_RELEASE=trixie BOOT_MODE=both \
+  CUSTOMIZE_COMMANDS='apt-get install -y nginx && systemctl enable nginx && echo hello > /etc/motd' \
+  bash scripts/build-image.sh
+```
+
+**执行时机**：项目自身配置（用户 / sshd / 网络 / cloud-init / grub）全部完成之后，
+切换内网源与清理裁剪之前 —— 此时 apt 源还是**公网**，可以正常装包；你装的包也会一并被裁剪（省体积）。
+
+**⚠️ 这是 chroot，不是真的开机**（构建过程不会引导内核）：
+
+| 能做 | 不能做 |
+|---|---|
+| `apt-get install` 装包、写配置、建用户、铺文件、预下载 | `systemctl start`（没有 systemd 在跑；用 `systemctl enable`，实例首启才真正启动） |
+| 跑不依赖 init / 网络栈的脚本 | 验证服务能否真的启动；依赖镜像内核的操作（`modprobe`、`uname -r` 都是构建机的） |
+| | 往 `/proc`、`/sys` 写（那会作用到构建机） |
+
+**关于 apt 源**：如果钩子里换了源（例如改成 `deb.debian.org`），后面的内网源切换**只替换主机名**，
+不会覆盖你的选择；想切回公网阿里云源可以用镜像里的 `/root/switch-apt-mirror.sh`。
+
+**安全提醒**：`customize` 输入的内容会出现在构建日志里，**不要在里面写密码/密钥**——敏感内容请写进
+`scripts/customize.sh`，或改用 cloud-init 在实例首启注入。
+
+**需要"实例首次开机才执行"的语义？** 那是另一种需求（每台实例跑一次、可依赖真实内核与网络）：
+建议用 cloud-init 的 user-data / `runcmd`，或往镜像里放一个首启 systemd unit。
 
 ## 本地构建
 
@@ -94,6 +130,7 @@ sudo env DEBIAN_RELEASE=trixie BOOT_MODE=both DISK_SIZE=1G bash scripts/build-im
 | `DISK_SIZE` | `1G` | 镜像虚拟磁盘大小 |
 | `ESP_SIZE` | `64M` | EFI 系统分区大小；**只在 `boot_mode` 含 uefi 时才创建**（官方镜像是 512M） |
 | `CLOUD_INIT` | `1` | 置 `0` 不装 cloud-init（省约 60 MB，但实例创建时绑定密钥对不再生效） |
+| `CUSTOMIZE_COMMANDS` | 空 | 打包前在镜像内执行的自定义命令（留空则执行 `scripts/customize.sh`） |
 | `INITRAMFS_MODULES` | `most` | 改成 `dep` 能再省十几 MB，但个别虚拟化平台可能起不来 |
 | `NODOC` | `1` | 删除文档/手册/locale/i18n，只保留各包 `copyright` |
 | `DEFAULT_USER` | `debian` | 默认普通用户 |
@@ -110,6 +147,7 @@ import_custom_image_guide.md               # 阿里云导入自定义镜像的�
 scripts/lib.sh                             # 版本/软件源映射表、日志、断言、fstrim 回收
 scripts/build-image.sh                     # 建盘 → 分区 → debootstrap → chroot 配置 → 回收 → 压缩
 scripts/guest-setup.sh                     # 在 chroot 内执行：装包 + 系统配置 + 引导程序
+scripts/customize.sh                       # 自定义初始化脚本（默认只 echo 提示；把你的命令写这里）
 scripts/guest-grub.sh                      # 在 chroot 内执行：用真实 UUID 生成 grub.cfg
 scripts/guest-finalize.sh                  # 在 chroot 内执行：启用服务 + 清理裁剪
 scripts/finalize-image.sh                  # 镜像级断言 + 转 qcow2 压缩

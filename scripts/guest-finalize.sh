@@ -79,5 +79,6 @@ if [ "${NODOC}" = "1" ]; then
   rm -rf /usr/share/man /usr/share/info /usr/share/locale /usr/share/i18n /var/cache/man
 fi
 
-rm -f /tmp/guest-setup.sh /tmp/guest-finalize.sh /tmp/build-params.sh "${PUBKEY_FILE}" "${PW_FILE}"
+rm -f /tmp/guest-setup.sh /tmp/guest-finalize.sh /tmp/guest-grub.sh /tmp/customize.sh \
+      /tmp/build-params.sh "${PUBKEY_FILE}" "${PW_FILE}"
 info "guest 侧收尾完成"
