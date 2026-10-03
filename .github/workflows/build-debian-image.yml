@@ -134,7 +134,7 @@ jobs:
           echo "磁盘大小：${DISK_SIZE}"
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装构建工具
         run: |
@@ -163,7 +163,7 @@ jobs:
           cat "${GITHUB_OUTPUT}"
 
       - name: 上传镜像 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: debian-custom-${{ matrix.release }}
           path: dist/*.qcow2
@@ -174,7 +174,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: 下载全部镜像 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
